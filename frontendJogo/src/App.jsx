@@ -513,9 +513,9 @@ export default function App() {
     <main className="app-shell">
       <section className="panel">
         <header className="topbar">
-          <div>
-            <h1>Forca Arena</h1>
-            <p className="subtitle">Fluxo: nome do jogador -&gt; lobby -&gt; partida por turnos (3 rodadas)</p>
+          <div className="topbar-brand">
+            <h1>⚔ Forca Arena</h1>
+            <p className="subtitle">Desafie seus amigos em partidas de forca por turnos</p>
           </div>
           <div className="topbar-actions">
             <div className={`status ${isConnected ? "online" : "offline"}`}>{isConnected ? "Conectado" : "Desconectado"}</div>
