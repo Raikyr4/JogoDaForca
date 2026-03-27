@@ -14,7 +14,21 @@ async def websocket_handler(websocket: WebSocket, game_service: GameService) -> 
             data = await websocket.receive_json()
             event_type = data.get("type")
 
-            if event_type in {"join_queue", "register_player"}:
+            if event_type == "join_queue":
+                player_id = str(data.get("player_id", "")).strip()
+                if player_id:
+                    if bound_player_id is not None and bound_player_id != player_id:
+                        await websocket.send_json({"type": "error", "message": "player_id invalido para este socket"})
+                        continue
+                    try:
+                        await game_service.enqueue_existing_player(player_id)
+                        if bound_player_id is None:
+                            bound_player_id = player_id
+                    except ValueError as exc:
+                        await websocket.send_json({"type": "error", "message": str(exc)})
+                    continue
+
+            if event_type in {"register_player"}:
                 if bound_player_id is not None:
                     await websocket.send_json({"type": "error", "message": "Sessao ja iniciada"})
                     continue
