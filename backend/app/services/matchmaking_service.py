@@ -118,7 +118,15 @@ class MatchmakingService:
             "current_theme": first_round["theme"],
             "correct_letters": [],
             "wrong_letters": [],
+            "wrong_letters_by_player": {
+                player_1["player_id"]: [],
+                player_2["player_id"]: [],
+            },
             "errors": 0,
+            "errors_by_player": {
+                player_1["player_id"]: 0,
+                player_2["player_id"]: 0,
+            },
             "scores": {
                 player_1["player_id"]: 0,
                 player_2["player_id"]: 0,
@@ -186,12 +194,17 @@ class MatchmakingService:
 
     async def broadcast_queue_updates(self) -> None:
         waiting = await self.repository.list_waiting_players()
+        total_waiting = len(waiting)
         for position, player_id in enumerate(waiting, start=1):
             await self.dispatcher.send_to_player(
                 player_id,
                 {
                     "type": "queue_update",
                     "position": position,
-                    "message": "Aguardando adversario",
+                    "total_waiting": total_waiting,
+                    "message": (
+                        "Aguardando adversario. "
+                        f"Voce esta na posicao {position} da fila."
+                    ),
                 },
             )

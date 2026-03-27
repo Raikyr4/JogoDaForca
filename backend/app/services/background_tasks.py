@@ -13,8 +13,7 @@ async def run_metrics_refresh_loop(
     interval_seconds: int,
 ) -> None:
     while True:
-        snapshot = await lobby_service.snapshot()
-        waiting = int(snapshot.get("waiting_players", 0))
+        waiting = await repository.waiting_count()
         active = await repository.active_matches_count()
         metrics.set_waiting_players(waiting)
         metrics.set_active_matches(active)

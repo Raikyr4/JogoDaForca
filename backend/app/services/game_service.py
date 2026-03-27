@@ -47,6 +47,20 @@ class GameService:
         self.word_bank = word_bank
         self.metrics = metrics
 
+    @staticmethod
+    def _ensure_player_error_state(match: MatchState) -> None:
+        if "errors_by_player" not in match:
+            match["errors_by_player"] = {pid: 0 for pid in match["player_ids"]}
+        else:
+            for pid in match["player_ids"]:
+                match["errors_by_player"].setdefault(pid, 0)
+
+        if "wrong_letters_by_player" not in match:
+            match["wrong_letters_by_player"] = {pid: [] for pid in match["player_ids"]}
+        else:
+            for pid in match["player_ids"]:
+                match["wrong_letters_by_player"].setdefault(pid, [])
+
     async def register_player(self, websocket: WebSocket, nickname: str) -> str:
         nickname = nickname.strip()
         if not nickname:
@@ -75,7 +89,7 @@ class GameService:
             {
                 "type": "connected",
                 "player_id": player_id,
-                "message": "Conectado com sucesso",
+                "message": "Conectado com sucesso. Entrando na fila automaticamente.",
             },
         )
         logger.info(
@@ -86,10 +100,19 @@ class GameService:
                 "nickname": nickname,
             },
         )
+        await self.matchmaking.join_queue(player_id)
         return player_id
 
     async def join_queue(self, websocket: WebSocket, nickname: str) -> str:
         return await self.register_player(websocket, nickname)
+
+    async def enqueue_existing_player(self, player_id: str) -> None:
+        player = await self.repository.get_player(player_id)
+        if player is None:
+            raise ValueError("Jogador nao encontrado")
+        if player.get("status") == "playing":
+            raise ValueError("Voce ja esta em partida ativa")
+        await self.matchmaking.join_queue(player_id)
 
     async def join_room(self, player_id: str, room_id: str) -> None:
         result = await self.lobby_service.join_room(player_id, room_id)
@@ -155,12 +178,13 @@ class GameService:
         )
 
         if player["status"] == "waiting":
+            position = await self.repository.queue_position(player_id)
             await self.dispatcher.send_to_player(
                 player_id,
                 {
-                    "type": "room_joined",
-                    "room_id": player.get("room_id"),
-                    "message": "Sessao aguardando adversario restaurada",
+                    "type": "queue_update",
+                    "position": position,
+                    "message": "Sessao de fila restaurada. Aguardando adversario.",
                 },
             )
             return True
@@ -229,6 +253,7 @@ class GameService:
         )
 
         if player["status"] == "waiting":
+            await self.matchmaking.remove_from_queue(player_id)
             await self.lobby_service.remove_player_from_waiting_room(player_id)
             return
 
@@ -295,6 +320,7 @@ class GameService:
                 self.metrics.inc_errors("missing_match")
                 await self.dispatcher.send_error(player_id, "Partida nao encontrada")
                 return
+            self._ensure_player_error_state(match)
 
             if match["status"] != "active":
                 await self._send_game_over_to_player(match, player_id)
@@ -326,8 +352,10 @@ class GameService:
                     await self.repository.save_match(match)
             else:
                 match["wrong_letters"].append(letter)
-                match["errors"] += 1
-                if match["errors"] >= self.settings.max_errors:
+                match["wrong_letters_by_player"][player_id].append(letter)
+                match["errors_by_player"][player_id] += 1
+                match["errors"] = sum(match["errors_by_player"].values())
+                if match["errors_by_player"][player_id] >= self.settings.max_errors:
                     await self._complete_round(match, winner_id=opp_id, reason="max_errors")
                 else:
                     match["turn"] = opp_id
@@ -343,7 +371,7 @@ class GameService:
                     "player_id": player_id,
                     "letter": letter,
                     "hit": letter in match["current_word"],
-                    "errors": match["errors"],
+                    "player_errors": match["errors_by_player"].get(player_id, 0),
                     "turn": match["turn"],
                 },
             )
@@ -379,6 +407,7 @@ class GameService:
                 self.metrics.inc_errors("missing_match")
                 await self.dispatcher.send_error(player_id, "Partida nao encontrada")
                 return
+            self._ensure_player_error_state(match)
 
             if match["status"] != "active":
                 await self._send_game_over_to_player(match, player_id)
@@ -406,7 +435,8 @@ class GameService:
                         "theme": match["current_theme"],
                         "winner": opp_id,
                         "reason": "wrong_word_guess",
-                        "errors": match["errors"],
+                        "errors": sum(match["errors_by_player"].values()),
+                        "errors_by_player": dict(match["errors_by_player"]),
                         "finished_at": int(time.time()),
                     }
                 )
@@ -443,6 +473,7 @@ class GameService:
             if match is None or match["status"] != "active":
                 await self.repository.remove_reconnect_deadline(match_id, disconnected_player_id)
                 return
+            self._ensure_player_error_state(match)
 
             deadline = match["disconnect_deadlines"].get(disconnected_player_id)
             now = int(time.time())
@@ -483,7 +514,8 @@ class GameService:
                 "theme": match["current_theme"],
                 "winner": winner_id,
                 "reason": reason,
-                "errors": match["errors"],
+                "errors": sum(match["errors_by_player"].values()),
+                "errors_by_player": dict(match["errors_by_player"]),
                 "finished_at": now,
             }
         )
@@ -514,7 +546,9 @@ class GameService:
         match["current_theme"] = next_entry["theme"]
         match["correct_letters"] = []
         match["wrong_letters"] = []
+        match["wrong_letters_by_player"] = {pid: [] for pid in match["player_ids"]}
         match["errors"] = 0
+        match["errors_by_player"] = {pid: 0 for pid in match["player_ids"]}
         match["turn"] = self._round_start_player(match, next_round)
         match["updated_at"] = now
 
@@ -611,5 +645,6 @@ class GameService:
             await self._send_game_state(match, player_id)
 
     async def _send_game_state(self, match: MatchState, player_id: str) -> None:
+        self._ensure_player_error_state(match)
         payload = build_game_state_payload(match, player_id, self.settings.max_errors)
         await self.dispatcher.send_to_player(player_id, payload)

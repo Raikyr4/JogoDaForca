@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 const PLAYER_STORAGE_KEY = "hangman_player_id";
 const NICKNAME_STORAGE_KEY = "hangman_nickname";
-const ROOM_POLL_INTERVAL_MS = 2000;
 
 function buildWsUrl() {
   if (import.meta.env.VITE_WS_URL) return import.meta.env.VITE_WS_URL;
@@ -21,40 +20,6 @@ function reasonLabel(reason) {
   return "Partida encerrada";
 }
 
-function initials(name) {
-  if (!name) return "?";
-  const tokens = String(name).trim().split(" ").filter(Boolean);
-  if (tokens.length === 1) return tokens[0][0]?.toUpperCase() || "?";
-  return `${tokens[0][0] || ""}${tokens[1][0] || ""}`.toUpperCase();
-}
-
-function roomSlots(room) {
-  const players = room.players || [];
-  return [players[0] || null, players[1] || null];
-}
-
-function compareRooms(left, right) {
-  const leftId = String(left?.room_id || "");
-  const rightId = String(right?.room_id || "");
-
-  const leftSala = /^sala-(\d+)$/i.exec(leftId);
-  const rightSala = /^sala-(\d+)$/i.exec(rightId);
-
-  if (leftSala && rightSala) {
-    return Number(leftSala[1]) - Number(rightSala[1]);
-  }
-  if (leftSala) return -1;
-  if (rightSala) return 1;
-
-  const leftCreated = Number(left?.created_at || 0);
-  const rightCreated = Number(right?.created_at || 0);
-  if (leftCreated !== rightCreated) return leftCreated - rightCreated;
-
-  const leftName = String(left?.name || leftId);
-  const rightName = String(right?.name || rightId);
-  return leftName.localeCompare(rightName);
-}
-
 export default function App() {
   const wsUrl = useMemo(() => buildWsUrl(), []);
   const wsRef = useRef(null);
@@ -70,13 +35,10 @@ export default function App() {
   const [nicknameInput, setNicknameInput] = useState(localStorage.getItem(NICKNAME_STORAGE_KEY) || "");
   const [nickname, setNickname] = useState(localStorage.getItem(NICKNAME_STORAGE_KEY) || "");
   const [playerId, setPlayerId] = useState("");
-  const [feedback, setFeedback] = useState("Digite seu nome para entrar no lobby");
+  const [feedback, setFeedback] = useState("Digite seu nome para entrar na fila");
 
-  const [rooms, setRooms] = useState([]);
-  const [activeMatches, setActiveMatches] = useState(0);
-  const [waitingRooms, setWaitingRooms] = useState(0);
-  const [newRoomName, setNewRoomName] = useState("");
-  const [currentRoomId, setCurrentRoomId] = useState("");
+  const [queuePosition, setQueuePosition] = useState(null);
+  const [queueTotal, setQueueTotal] = useState(0);
 
   const [matchId, setMatchId] = useState("");
   const [opponent, setOpponent] = useState("");
@@ -87,8 +49,8 @@ export default function App() {
   const [correctLetters, setCorrectLetters] = useState([]);
   const [wrongLetters, setWrongLetters] = useState([]);
   const [errors, setErrors] = useState(0);
+  const [opponentErrors, setOpponentErrors] = useState(0);
   const [remainingErrors, setRemainingErrors] = useState(6);
-  const [turn, setTurn] = useState("");
   const [isYourTurn, setIsYourTurn] = useState(false);
   const [canGuess, setCanGuess] = useState(false);
   const [yourScore, setYourScore] = useState(0);
@@ -106,26 +68,6 @@ export default function App() {
     playerIdRef.current = playerId;
   }, [playerId]);
 
-  const loadLobby = useCallback(async () => {
-    try {
-      const response = await fetch("/api/lobby");
-      if (!response.ok) return;
-      const payload = await response.json();
-      const nextRooms = [...(payload.rooms || [])].sort(compareRooms);
-      setRooms(nextRooms);
-      setActiveMatches(payload.active_matches || 0);
-      setWaitingRooms(payload.waiting_rooms || 0);
-    } catch (_error) {
-      // keep UI stable if lobby fetch fails temporarily.
-    }
-  }, []);
-
-  useEffect(() => {
-    loadLobby();
-    const timer = window.setInterval(loadLobby, ROOM_POLL_INTERVAL_MS);
-    return () => window.clearInterval(timer);
-  }, [loadLobby]);
-
   useEffect(() => {
     if (!playerId) return;
     heartbeatTimerRef.current = window.setInterval(() => {
@@ -134,6 +76,7 @@ export default function App() {
         ws.send(JSON.stringify({ type: "heartbeat", player_id: playerId }));
       }
     }, 5000);
+
     return () => {
       if (heartbeatTimerRef.current) window.clearInterval(heartbeatTimerRef.current);
     };
@@ -151,6 +94,14 @@ export default function App() {
     };
   }, []);
 
+  function clearReconnectTimer() {
+    if (reconnectTimerRef.current) {
+      window.clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    reconnectAttemptsRef.current = 0;
+  }
+
   function clearMatchState() {
     setMatchId("");
     setOpponent("");
@@ -161,8 +112,8 @@ export default function App() {
     setCorrectLetters([]);
     setWrongLetters([]);
     setErrors(0);
+    setOpponentErrors(0);
     setRemainingErrors(6);
-    setTurn("");
     setIsYourTurn(false);
     setCanGuess(false);
     setYourScore(0);
@@ -174,14 +125,6 @@ export default function App() {
     setWinner("");
     setIsDraw(false);
     setGameOverReason("");
-  }
-
-  function clearReconnectTimer() {
-    if (reconnectTimerRef.current) {
-      window.clearTimeout(reconnectTimerRef.current);
-      reconnectTimerRef.current = null;
-    }
-    reconnectAttemptsRef.current = 0;
   }
 
   function scheduleReconnect() {
@@ -200,9 +143,7 @@ export default function App() {
       return;
     }
 
-    if (wsRef.current && wsRef.current.readyState === WebSocket.CONNECTING) {
-      return;
-    }
+    if (wsRef.current && wsRef.current.readyState === WebSocket.CONNECTING) return;
 
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
@@ -242,9 +183,8 @@ export default function App() {
       playerIdRef.current = id;
       localStorage.setItem(PLAYER_STORAGE_KEY, id);
       if (nickname) localStorage.setItem(NICKNAME_STORAGE_KEY, nickname);
-      setPhase("lobby");
-      setFeedback("Conectado! Escolha uma sala.");
-      loadLobby();
+      setPhase("queue");
+      setFeedback(payload.message || "Conectado! Entrando na fila.");
       return;
     }
 
@@ -253,34 +193,29 @@ export default function App() {
       if (matchId) {
         setPhase("match");
       } else {
-        setPhase("lobby");
+        setPhase("queue");
       }
       return;
     }
 
     if (payload.type === "queue_update") {
+      setQueuePosition(payload.position ?? null);
+      setQueueTotal(payload.total_waiting || 0);
+      setPhase("queue");
       setFeedback(payload.message || "Aguardando adversario");
-      return;
-    }
-
-    if (payload.type === "room_joined") {
-      setCurrentRoomId(payload.room_id || "");
-      setPhase("lobby");
-      setFeedback(payload.message || "Voce entrou na sala");
-      loadLobby();
       return;
     }
 
     if (payload.type === "match_found") {
       setMatchId(payload.match_id || "");
-      setCurrentRoomId((prev) => payload.room_id || prev);
       setOpponent(payload.opponent || "Adversario");
+      setQueuePosition(null);
+      setQueueTotal(0);
       if (payload.round_number) setRoundNumber(payload.round_number);
       if (payload.total_rounds) setTotalRounds(payload.total_rounds);
       if (payload.theme) setTheme(payload.theme);
       setPhase("match");
       setFeedback(payload.message || "Partida iniciada");
-      loadLobby();
       return;
     }
 
@@ -293,8 +228,8 @@ export default function App() {
       setCorrectLetters(payload.correct_letters || []);
       setWrongLetters(payload.wrong_letters || []);
       setErrors(payload.errors || 0);
+      setOpponentErrors(payload.opponent_errors || 0);
       setRemainingErrors(payload.remaining_errors || 0);
-      setTurn(payload.turn || "");
       setIsYourTurn(Boolean(payload.is_your_turn));
       setCanGuess(Boolean(payload.can_guess));
       setYourScore(payload.your_score || 0);
@@ -302,11 +237,7 @@ export default function App() {
       setRoundHistory(payload.round_history || []);
       setRevealedWord(payload.revealed_word || "");
       if (payload.opponent) setOpponent(payload.opponent);
-      if (payload.status === "finished") {
-        setPhase("finished");
-      } else {
-        setPhase("match");
-      }
+      setPhase(payload.status === "finished" ? "finished" : "match");
       return;
     }
 
@@ -323,14 +254,9 @@ export default function App() {
       setOpponentScore(payload.opponent_score || 0);
       if (payload.round_history) setRoundHistory(payload.round_history);
       setPhase("finished");
-      if (payload.is_draw) {
-        setFeedback("Empate");
-      } else if (payload.winner && payload.winner === playerIdRef.current) {
-        setFeedback("Voce venceu");
-      } else {
-        setFeedback("Voce perdeu");
-      }
-      loadLobby();
+      if (payload.is_draw) setFeedback("Empate");
+      else if (payload.winner && payload.winner === playerIdRef.current) setFeedback("Voce venceu");
+      else setFeedback("Voce perdeu");
       return;
     }
 
@@ -353,24 +279,23 @@ export default function App() {
       window.clearInterval(heartbeatTimerRef.current);
       heartbeatTimerRef.current = null;
     }
+
     manualCloseRef.current = true;
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
     }
 
-    if (clearPlayerStorage) {
-      localStorage.removeItem(PLAYER_STORAGE_KEY);
-    }
+    if (clearPlayerStorage) localStorage.removeItem(PLAYER_STORAGE_KEY);
     setPlayerId("");
     playerIdRef.current = "";
-
+    setQueuePosition(null);
+    setQueueTotal(0);
     clearMatchState();
-    setCurrentRoomId("");
     setIsConnected(false);
   }
 
-  function handleEnterLobby(event) {
+  function handleEnter(event) {
     event.preventDefault();
     const cleanName = nicknameInput.trim();
     if (!cleanName) {
@@ -380,8 +305,7 @@ export default function App() {
 
     const storedPlayerId = localStorage.getItem(PLAYER_STORAGE_KEY) || "";
     const storedNickname = localStorage.getItem(NICKNAME_STORAGE_KEY) || "";
-    const shouldTryReconnect =
-      Boolean(storedPlayerId) && storedNickname.toLowerCase() === cleanName.toLowerCase();
+    const shouldTryReconnect = Boolean(storedPlayerId) && storedNickname.toLowerCase() === cleanName.toLowerCase();
 
     if (shouldTryReconnect) {
       resetConnectionForNewLogin({ clearPlayerStorage: false });
@@ -397,7 +321,6 @@ export default function App() {
     resetConnectionForNewLogin();
     setNickname(cleanName);
     localStorage.setItem(NICKNAME_STORAGE_KEY, cleanName);
-
     setFeedback("Conectando...");
     openSocket({ type: "register_player", nickname: cleanName });
   }
@@ -408,49 +331,7 @@ export default function App() {
     setNicknameInput("");
     localStorage.removeItem(NICKNAME_STORAGE_KEY);
     setPhase("name");
-    setFeedback("Digite seu nome para entrar no lobby");
-    loadLobby();
-  }
-
-  function handleJoinRoom(roomId) {
-    if (!(wsRef.current && wsRef.current.readyState === WebSocket.OPEN)) {
-      setFeedback("Conexao indisponivel");
-      return;
-    }
-    if (!playerId) {
-      setFeedback("Jogador nao registrado");
-      return;
-    }
-    wsRef.current.send(JSON.stringify({ type: "join_room", player_id: playerId, room_id: roomId }));
-  }
-
-  async function handleCreateRoom(event) {
-    event.preventDefault();
-    const name = newRoomName.trim();
-    if (!name) return;
-
-    try {
-      const response = await fetch("/api/lobby/rooms", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name }),
-      });
-      if (!response.ok) {
-        setFeedback("Falha ao criar sala");
-        return;
-      }
-
-      const payload = await response.json();
-      const createdRoomId = payload?.room?.room_id || "";
-      setNewRoomName("");
-      setFeedback("Sala criada com sucesso");
-      await loadLobby();
-      if (createdRoomId) {
-        handleJoinRoom(createdRoomId);
-      }
-    } catch (_error) {
-      setFeedback("Erro ao criar sala");
-    }
+    setFeedback("Digite seu nome para entrar na fila");
   }
 
   function handleGuessLetter(event) {
@@ -458,14 +339,7 @@ export default function App() {
     const letter = letterInput.trim().slice(0, 1).toUpperCase();
     if (!letter || !playerId || !matchId) return;
     if (!(wsRef.current && wsRef.current.readyState === WebSocket.OPEN)) return;
-    wsRef.current.send(
-      JSON.stringify({
-        type: "guess_letter",
-        player_id: playerId,
-        match_id: matchId,
-        letter,
-      })
-    );
+    wsRef.current.send(JSON.stringify({ type: "guess_letter", player_id: playerId, match_id: matchId, letter }));
     setLetterInput("");
   }
 
@@ -474,37 +348,19 @@ export default function App() {
     const word = wordInput.trim().toUpperCase();
     if (!word || !playerId || !matchId) return;
     if (!(wsRef.current && wsRef.current.readyState === WebSocket.OPEN)) return;
-    wsRef.current.send(
-      JSON.stringify({
-        type: "guess_word",
-        player_id: playerId,
-        match_id: matchId,
-        word,
-      })
-    );
+    wsRef.current.send(JSON.stringify({ type: "guess_word", player_id: playerId, match_id: matchId, word }));
     setWordInput("");
   }
 
-  function goToLobby() {
+  function playAgain() {
     clearMatchState();
-    setPhase("lobby");
-    setCurrentRoomId("");
-    setFeedback("Escolha uma sala para jogar");
-    loadLobby();
-  }
-
-  function roomButtonState(room) {
-    const players = room.players || [];
-    const isMyRoom = players.some((p) => p.player_id === playerId);
-
-    if (!isConnected) return { disabled: true, label: "Sem conexao" };
-    if (phase === "reconnecting") return { disabled: true, label: "Reconectando" };
-
-    if (room.status === "in_game" && !isMyRoom) return { disabled: true, label: "Em jogo" };
-    if (isMyRoom && room.status !== "in_game") return { disabled: true, label: "Aguardando" };
-    if (players.length >= (room.max_players || 2) && !isMyRoom) return { disabled: true, label: "Lotada" };
-
-    return { disabled: false, label: "Entrar" };
+    setQueuePosition(null);
+    setQueueTotal(0);
+    setPhase("queue");
+    setFeedback("Voltando para a fila automaticamente...");
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && playerId) {
+      wsRef.current.send(JSON.stringify({ type: "join_queue", player_id: playerId }));
+    }
   }
 
   const youWon = winner && winner === playerId;
@@ -514,8 +370,8 @@ export default function App() {
       <section className="panel">
         <header className="topbar">
           <div>
-            <h1>Forca Arena</h1>
-            <p className="subtitle">Fluxo: nome do jogador -&gt; lobby -&gt; partida por turnos (3 rodadas)</p>
+            <h1>Forca Arena Distribuida</h1>
+            <p className="subtitle">Fluxo automatico: conexao - fila - partida em pares de jogadores</p>
           </div>
           <div className="topbar-actions">
             <div className={`status ${isConnected ? "online" : "offline"}`}>{isConnected ? "Conectado" : "Desconectado"}</div>
@@ -531,9 +387,9 @@ export default function App() {
 
         {phase === "name" && (
           <section className="hero-card">
-            <h2>Entrar no Lobby</h2>
-            <p>Digite seu nome para acessar as salas e escolher onde jogar.</p>
-            <form className="entry-form" onSubmit={handleEnterLobby}>
+            <h2>Entrar no jogo</h2>
+            <p>Digite seu nome. O servidor coloca voce na fila e forma partidas com 2 jogadores automaticamente.</p>
+            <form className="entry-form" onSubmit={handleEnter}>
               <label htmlFor="nickname">Nome do jogador</label>
               <input
                 id="nickname"
@@ -548,62 +404,21 @@ export default function App() {
           </section>
         )}
 
-        {(phase === "lobby" || phase === "reconnecting") && (
-          <section className="lobby-section">
-            {phase === "reconnecting" && (
-              <div className="reconnect-banner">Tentando reconectar sua sessao. Aguarde alguns segundos...</div>
+        {(phase === "queue" || phase === "reconnecting") && (
+          <section className="hero-card">
+            <h2>{phase === "reconnecting" ? "Reconectando" : "Fila de espera"}</h2>
+            <p>
+              Jogador: <strong>{nickname || "-"}</strong>
+            </p>
+            {phase === "reconnecting" ? (
+              <p className="muted">Tentando restaurar sessao...</p>
+            ) : (
+              <>
+                <p>Posicao na fila: <strong>{queuePosition || "calculando..."}</strong></p>
+                <p>Jogadores aguardando: <strong>{queueTotal}</strong></p>
+                <p className="muted">Quando entrar um adversario, a partida inicia automaticamente.</p>
+              </>
             )}
-
-            <div className="lobby-header">
-              <div>
-                <h2>Salas</h2>
-                <p className="muted">
-                  Jogador: <strong>{nickname || "-"}</strong>
-                </p>
-              </div>
-              <div className="lobby-stats">
-                <span>Salas: {rooms.length}</span>
-                <span>Em jogo: {activeMatches}</span>
-                <span>Aguardando: {waitingRooms}</span>
-              </div>
-            </div>
-
-            <form className="create-room" onSubmit={handleCreateRoom}>
-              <input
-                value={newRoomName}
-                onChange={(event) => setNewRoomName(event.target.value)}
-                placeholder="Criar sala personalizada"
-                maxLength={32}
-              />
-              <button type="submit">Criar sala</button>
-            </form>
-
-            <div className="rooms-grid">
-              {rooms.map((room) => {
-                const slots = roomSlots(room);
-                const action = roomButtonState(room);
-                const isCurrent = room.room_id === currentRoomId;
-                return (
-                  <article className={`room-card ${isCurrent ? "current" : ""}`} key={room.room_id}>
-                    <div className="room-head">
-                      <h3>{room.name}</h3>
-                      <span>{room.current_players || 0}/2</span>
-                    </div>
-
-                    <div className="room-body">
-                      <Avatar player={slots[0]} isMe={slots[0]?.player_id === playerId} />
-                      <span className="vs">VS</span>
-                      <Avatar player={slots[1]} isMe={slots[1]?.player_id === playerId} />
-                    </div>
-
-                    <p className="room-status">{room.status === "in_game" ? "Partida em andamento" : "Aguardando jogadores"}</p>
-                    <button type="button" onClick={() => handleJoinRoom(room.room_id)} disabled={action.disabled}>
-                      {action.label}
-                    </button>
-                  </article>
-                );
-              })}
-            </div>
           </section>
         )}
 
@@ -611,21 +426,11 @@ export default function App() {
           <section className="game-layout">
             <div className="board">
               <h2>Partida</h2>
+              <p>Adversario: <strong>{opponent || "..."}</strong></p>
               <p>
-                Sala: <strong>{currentRoomId || "-"}</strong>
+                Rodada: <strong>{roundNumber}/{totalRounds}</strong>
               </p>
-              <p>
-                Adversario: <strong>{opponent || "..."}</strong>
-              </p>
-              <p>
-                Rodada:{" "}
-                <strong>
-                  {roundNumber}/{totalRounds}
-                </strong>
-              </p>
-              <p>
-                Tema: <strong>{theme}</strong>
-              </p>
+              <p>Tema: <strong>{theme}</strong></p>
 
               <div className="score-row">
                 <div>
@@ -638,16 +443,13 @@ export default function App() {
                 </div>
               </div>
 
-              <p className={`turn-label ${isYourTurn ? "my-turn" : ""}`}>
-                {isYourTurn ? "Sua vez de jogar" : "Vez do adversario"}
-              </p>
+              <p className={`turn-label ${isYourTurn ? "my-turn" : ""}`}>{isYourTurn ? "Sua vez de jogar" : "Vez do adversario"}</p>
 
               <p className="masked-word">{maskedWord || "_ _ _ _"}</p>
               <p>Letras certas: {correctLetters.join(", ") || "-"}</p>
               <p>Letras erradas: {wrongLetters.join(", ") || "-"}</p>
-              <p>
-                Erros: {errors}/6 (restam {remainingErrors})
-              </p>
+              <p>Erros: {errors}/6 (restam {remainingErrors})</p>
+              <p>Erros do adversario: {opponentErrors}/6</p>
 
               <form className="guess-form" onSubmit={handleGuessLetter}>
                 <input
@@ -658,9 +460,7 @@ export default function App() {
                   required
                   disabled={!canGuess}
                 />
-                <button type="submit" disabled={!canGuess}>
-                  Jogar letra
-                </button>
+                <button type="submit" disabled={!canGuess}>Jogar letra</button>
               </form>
 
               <form className="guess-word-form" onSubmit={handleGuessWord}>
@@ -672,9 +472,7 @@ export default function App() {
                   required
                   disabled={!canGuess}
                 />
-                <button type="submit" className="danger" disabled={!canGuess}>
-                  Chutar palavra
-                </button>
+                <button type="submit" className="danger" disabled={!canGuess}>Chutar palavra</button>
               </form>
               <p className="warning">Se errar o chute de palavra, voce perde a partida automaticamente.</p>
             </div>
@@ -691,47 +489,23 @@ export default function App() {
           <section className="end-box">
             <h2>{isDraw ? "Empate" : youWon ? "Voce venceu" : "Voce perdeu"}</h2>
             <p>Motivo: {reasonLabel(gameOverReason)}</p>
-            <p>
-              Placar final: <strong>{yourScore}</strong> x <strong>{opponentScore}</strong>
-            </p>
-            {revealedWord && (
-              <p>
-                Ultima palavra: <strong>{revealedWord}</strong>
-              </p>
-            )}
+            <p>Placar final: <strong>{yourScore}</strong> x <strong>{opponentScore}</strong></p>
+            {revealedWord && <p>Ultima palavra: <strong>{revealedWord}</strong></p>}
             <div className="history">
               {roundHistory.length > 0 &&
                 roundHistory.map((round) => (
                   <div className="history-item" key={`round-${round.round_number}`}>
                     <strong>Rodada {round.round_number}</strong>
-                    <span>
-                      Tema: {round.theme} | Palavra: {round.word}
-                    </span>
-                    <span>
-                      Vencedor: {round.winner_nickname || "Ninguem"} | Motivo: {reasonLabel(round.reason)}
-                    </span>
+                    <span>Tema: {round.theme} | Palavra: {round.word}</span>
+                    <span>Vencedor: {round.winner_nickname || "Ninguem"} | Motivo: {reasonLabel(round.reason)}</span>
                   </div>
                 ))}
             </div>
-            <button type="button" onClick={goToLobby}>
-              Voltar ao lobby
-            </button>
+            <button type="button" onClick={playAgain}>Jogar novamente</button>
           </section>
         )}
       </section>
     </main>
-  );
-}
-
-function Avatar({ player, isMe }) {
-  if (!player) {
-    return <div className="avatar ghost" aria-hidden="true" />;
-  }
-
-  return (
-    <div className={`avatar filled ${isMe ? "me" : ""}`} title={player.nickname}>
-      <span>{initials(player.nickname)}</span>
-    </div>
   );
 }
 
