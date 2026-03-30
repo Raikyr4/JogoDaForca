@@ -62,7 +62,7 @@ export default function App() {
   const heartbeatTimerRef = useRef(null);
   const reconnectAttemptsRef = useRef(0);
   const manualCloseRef = useRef(false);
-  const playerIdRef = useRef(localStorage.getItem(PLAYER_STORAGE_KEY) || "");
+  const playerIdRef = useRef(sessionStorage.getItem(PLAYER_STORAGE_KEY) || "");
 
   const [phase, setPhase] = useState("name");
   const [isConnected, setIsConnected] = useState(false);
@@ -246,7 +246,7 @@ export default function App() {
       const id = payload.player_id;
       setPlayerId(id);
       playerIdRef.current = id;
-      localStorage.setItem(PLAYER_STORAGE_KEY, id);
+      sessionStorage.setItem(PLAYER_STORAGE_KEY, id);
       if (nickname) localStorage.setItem(NICKNAME_STORAGE_KEY, nickname);
       setPhase("lobby");
       setFeedback("Conectado! Escolha uma sala.");
@@ -347,7 +347,7 @@ export default function App() {
       const message = payload.message || "Erro";
       setFeedback(message);
       if (message.toLowerCase().includes("sessao")) {
-        localStorage.removeItem(PLAYER_STORAGE_KEY);
+        sessionStorage.removeItem(PLAYER_STORAGE_KEY);
         setPlayerId("");
         playerIdRef.current = "";
         setPhase("name");
@@ -369,7 +369,7 @@ export default function App() {
     }
 
     if (clearPlayerStorage) {
-      localStorage.removeItem(PLAYER_STORAGE_KEY);
+      sessionStorage.removeItem(PLAYER_STORAGE_KEY);
     }
     setPlayerId("");
     playerIdRef.current = "";
@@ -384,22 +384,6 @@ export default function App() {
     const cleanName = nicknameInput.trim();
     if (!cleanName) {
       setFeedback("Informe um nome valido");
-      return;
-    }
-
-    const storedPlayerId = localStorage.getItem(PLAYER_STORAGE_KEY) || "";
-    const storedNickname = localStorage.getItem(NICKNAME_STORAGE_KEY) || "";
-    const shouldTryReconnect =
-      Boolean(storedPlayerId) && storedNickname.toLowerCase() === cleanName.toLowerCase();
-
-    if (shouldTryReconnect) {
-      resetConnectionForNewLogin({ clearPlayerStorage: false });
-      setNickname(cleanName);
-      setPlayerId(storedPlayerId);
-      playerIdRef.current = storedPlayerId;
-      setPhase("reconnecting");
-      setFeedback("Tentando restaurar sua sessao...");
-      openSocket({ type: "reconnect", player_id: storedPlayerId });
       return;
     }
 
