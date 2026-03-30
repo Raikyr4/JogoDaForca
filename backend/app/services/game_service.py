@@ -53,28 +53,36 @@ class GameService:
             raise ValueError("Nickname e obrigatorio")
         if len(nickname) > 24:
             raise ValueError("Nickname muito longo")
+        normalized_nickname = nickname.casefold()
+        lock_key = f"lock:nickname:{normalized_nickname}"
+        lock_token = await self.repository.acquire_lock(lock_key, ttl_ms=4000)
+        if lock_token is None:
+            raise ValueError("Servidor ocupado ao validar nickname. Tente novamente.")
 
-        existing = await self.repository.find_player_by_nickname(nickname)
-        if existing is not None:
-            raise ValueError("Nickname ja esta em uso. Escolha outro.")
+        try:
+            existing = await self.repository.find_player_by_nickname(nickname)
+            if existing is not None:
+                raise ValueError("Nickname ja esta em uso. Escolha outro.")
 
-        player_id = str(uuid.uuid4())
-        now = int(time.time())
-        player: Player = {
-            "player_id": player_id,
-            "nickname": nickname,
-            "status": "idle",
-            "match_id": None,
-            "room_id": None,
-            "connected_server": self.settings.server_id,
-            "connected": True,
-            "last_seen": now,
-            "queue_entered_at": None,
-        }
+            player_id = str(uuid.uuid4())
+            now = int(time.time())
+            player: Player = {
+                "player_id": player_id,
+                "nickname": nickname,
+                "status": "idle",
+                "match_id": None,
+                "room_id": None,
+                "connected_server": self.settings.server_id,
+                "connected": True,
+                "last_seen": now,
+                "queue_entered_at": None,
+            }
 
-        await self.repository.save_player(player)
-        await self.repository.set_heartbeat(player_id, now)
-        await self.connection_manager.bind_player(player_id, websocket)
+            await self.repository.save_player(player)
+            await self.repository.set_heartbeat(player_id, now)
+            await self.connection_manager.bind_player(player_id, websocket)
+        finally:
+            await self.repository.release_lock(lock_key, lock_token)
 
         await self.connection_manager.send_local(
             player_id,

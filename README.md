@@ -178,6 +178,20 @@ docker compose down -v
 docker compose up --build
 ```
 
+### Se der erro ao baixar imagem do Docker Hub
+
+Se aparecer erro como `failed to fetch anonymous token` ao baixar `python:3.12-slim`, o problema e de rede/autenticacao com o Docker Hub (nao do codigo da aplicacao).
+
+Tente:
+
+```bash
+docker login
+docker pull python:3.12-slim
+docker compose up --build
+```
+
+Em ambiente Windows + Docker Desktop, tambem ajuda reiniciar o Docker Desktop e desativar temporariamente VPN/Proxy que esteja interferindo na conexao TLS.
+
 ### Abrir todas as URLs automaticamente (Windows / PowerShell)
 
 Abrir tudo de uma vez:
