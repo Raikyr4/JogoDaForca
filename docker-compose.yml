@@ -48,7 +48,7 @@ services:
 
   frontend:
     build:
-      context: ./frontend
+      context: ./frontendJogo
     container_name: hangman-frontend
     depends_on:
       - game-server-1

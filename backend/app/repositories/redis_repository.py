@@ -45,6 +45,33 @@ class RedisRepository:
         data = await self._get_json(self._player_key(player_id))
         return data  # type: ignore[return-value]
 
+    async def list_players(self) -> list[Player]:
+        players: list[Player] = []
+        async for key in self.redis.scan_iter(match="player:*"):
+            raw = await self.redis.get(key)
+            if raw is None:
+                continue
+            players.append(json.loads(raw))
+        return players  # type: ignore[return-value]
+
+    async def find_player_by_nickname(self, nickname: str) -> Optional[Player]:
+        normalized = nickname.strip().casefold()
+        if not normalized:
+            return None
+
+        players = await self.list_players()
+        for player in players:
+            current = str(player.get("nickname", "")).strip().casefold()
+            if current != normalized:
+                continue
+            status = str(player.get("status", "idle"))
+            connected = bool(player.get("connected", False))
+            # Bloqueia nickname em uso por jogador conectado
+            # e tambem por jogador em partida/espera (incluindo reconexao temporaria).
+            if connected or status in {"waiting", "playing"}:
+                return player
+        return None
+
     async def save_match(self, match: MatchState) -> None:
         await self._set_json(self._match_key(match["match_id"]), match)
 
