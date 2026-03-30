@@ -337,8 +337,15 @@ export default function App() {
     if (payload.type === "error") {
       const message = payload.message || "Erro";
       setFeedback(message);
+      if (message.toLowerCase().includes("nickname")) {
+        setPhase("name");
+        setIsConnected(false);
+      }
       if (message.toLowerCase().includes("sessao")) {
         localStorage.removeItem(PLAYER_STORAGE_KEY);
+        localStorage.removeItem(NICKNAME_STORAGE_KEY);
+        setNickname("");
+        setNicknameInput("");
         setPlayerId("");
         playerIdRef.current = "";
         setPhase("name");
