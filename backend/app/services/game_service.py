@@ -52,6 +52,10 @@ class GameService:
         if not nickname:
             raise ValueError("Nickname e obrigatorio")
 
+        existing_player = await self.repository.find_connected_player_by_nickname(nickname)
+        if existing_player is not None:
+            raise ValueError("Ja existe um jogador com esse nickname conectado")
+
         player_id = str(uuid.uuid4())
         now = int(time.time())
         player: Player = {

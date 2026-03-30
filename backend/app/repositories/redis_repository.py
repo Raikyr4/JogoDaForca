@@ -45,6 +45,29 @@ class RedisRepository:
         data = await self._get_json(self._player_key(player_id))
         return data  # type: ignore[return-value]
 
+    async def find_connected_player_by_nickname(self, nickname: str) -> Optional[Player]:
+        normalized_nickname = nickname.strip().casefold()
+        if not normalized_nickname:
+            return None
+
+        cursor = 0
+        while True:
+            cursor, keys = await self.redis.scan(cursor=cursor, match="player:*")
+            for key in keys:
+                player = await self._get_json(key)
+                if player is None:
+                    continue
+                if not player.get("connected"):
+                    continue
+                player_nickname = str(player.get("nickname", "")).strip().casefold()
+                if player_nickname == normalized_nickname:
+                    return player  # type: ignore[return-value]
+
+            if cursor == 0:
+                break
+
+        return None
+
     async def save_match(self, match: MatchState) -> None:
         await self._set_json(self._match_key(match["match_id"]), match)
 
